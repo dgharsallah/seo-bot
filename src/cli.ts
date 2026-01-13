@@ -8,6 +8,7 @@ import path from 'path';
 import { SEOBot } from './index';
 import { config, validateConfig, getOutputPath } from './config';
 import { GeneratedArticle, SiteAnalysis, KeywordCluster } from './types';
+import { Scheduler, AstroPublisher } from './services';
 
 const program = new Command();
 
@@ -262,6 +263,364 @@ program
       process.exit(1);
     }
   });
+
+// Schedule command
+program
+  .command('schedule <keyword>')
+  .description('Schedule an article for generation and publishing')
+  .option('-d, --date <date>', 'Publish date (ISO format or relative like "tomorrow", "+3days")')
+  .option('-t, --tone <tone>', 'Article tone', 'professional')
+  .option('--astro <path>', 'Astro content directory path')
+  .option('--collection <name>', 'Astro collection name', 'blog')
+  .option('--data-dir <path>', 'Scheduler data directory', './.seo-bot')
+  .action(async (keyword: string, options) => {
+    try {
+      const scheduledDate = parseDate(options.date || 'tomorrow');
+
+      const scheduler = new Scheduler({
+        dataDir: options.dataDir,
+        astroConfig: options.astro ? {
+          contentDir: options.astro,
+          collection: options.collection,
+        } : undefined,
+      });
+
+      await scheduler.initialize();
+
+      const task = await scheduler.schedule(
+        {
+          targetKeyword: keyword,
+          tone: options.tone,
+        },
+        scheduledDate,
+        options.astro ? 'generate_and_publish' : 'generate'
+      );
+
+      console.log(chalk.green('✓') + ' Article scheduled!');
+      console.log(`${chalk.cyan('Task ID:')} ${task.id}`);
+      console.log(`${chalk.cyan('Keyword:')} ${keyword}`);
+      console.log(`${chalk.cyan('Scheduled:')} ${scheduledDate.toLocaleString()}`);
+      console.log(`${chalk.cyan('Type:')} ${task.type}`);
+
+      if (options.astro) {
+        console.log(`${chalk.cyan('Publish to:')} ${options.astro}/${options.collection}/`);
+      }
+
+    } catch (error: any) {
+      console.error(chalk.red('Scheduling failed:'), error.message);
+      process.exit(1);
+    }
+  });
+
+// Schedule bulk command
+program
+  .command('schedule-bulk')
+  .description('Schedule multiple articles from a file or keyword list')
+  .option('-k, --keywords <keywords>', 'Comma-separated keywords')
+  .option('-f, --file <path>', 'File with keywords (one per line)')
+  .option('--start <date>', 'Start date', 'tomorrow')
+  .option('--interval <days>', 'Days between posts', '2')
+  .option('--astro <path>', 'Astro content directory path')
+  .option('--collection <name>', 'Astro collection name', 'blog')
+  .option('--data-dir <path>', 'Scheduler data directory', './.seo-bot')
+  .action(async (options) => {
+    try {
+      let keywords: string[] = [];
+
+      if (options.file) {
+        const content = await fs.readFile(options.file, 'utf-8');
+        keywords = content.split('\n').map(k => k.trim()).filter(Boolean);
+      } else if (options.keywords) {
+        keywords = options.keywords.split(',').map((k: string) => k.trim());
+      } else {
+        console.error(chalk.red('Provide --keywords or --file'));
+        process.exit(1);
+      }
+
+      const scheduler = new Scheduler({
+        dataDir: options.dataDir,
+        astroConfig: options.astro ? {
+          contentDir: options.astro,
+          collection: options.collection,
+        } : undefined,
+      });
+
+      await scheduler.initialize();
+
+      const startDate = parseDate(options.start);
+      const intervalDays = parseInt(options.interval);
+
+      const tasks = await scheduler.scheduleWeekly(keywords, {
+        startDate,
+        postsPerWeek: Math.ceil(7 / intervalDays),
+      });
+
+      console.log(chalk.green('✓') + ` Scheduled ${tasks.length} articles!`);
+      console.log('\n' + chalk.bold('Schedule:'));
+
+      tasks.forEach((task, i) => {
+        console.log(`  ${chalk.yellow(i + 1 + '.')} ${task.options.targetKeyword}`);
+        console.log(`     ${chalk.gray(task.scheduledAt.toLocaleString())}`);
+      });
+
+    } catch (error: any) {
+      console.error(chalk.red('Bulk scheduling failed:'), error.message);
+      process.exit(1);
+    }
+  });
+
+// List scheduled tasks
+program
+  .command('schedule-list')
+  .description('List all scheduled tasks')
+  .option('--status <status>', 'Filter by status (pending, completed, failed)')
+  .option('--data-dir <path>', 'Scheduler data directory', './.seo-bot')
+  .action(async (options) => {
+    try {
+      const scheduler = new Scheduler({ dataDir: options.dataDir });
+      await scheduler.initialize();
+
+      const tasks = scheduler.listTasks(
+        options.status ? { status: options.status } : undefined
+      );
+
+      if (tasks.length === 0) {
+        console.log(chalk.yellow('No scheduled tasks found.'));
+        return;
+      }
+
+      console.log(chalk.bold(`Scheduled Tasks (${tasks.length})`));
+      console.log(chalk.gray('─'.repeat(60)));
+
+      for (const task of tasks) {
+        const statusColor = {
+          pending: chalk.yellow,
+          running: chalk.blue,
+          completed: chalk.green,
+          failed: chalk.red,
+        }[task.status];
+
+        console.log(`\n${chalk.cyan('ID:')} ${task.id}`);
+        console.log(`${chalk.cyan('Keyword:')} ${task.options.targetKeyword}`);
+        console.log(`${chalk.cyan('Status:')} ${statusColor(task.status)}`);
+        console.log(`${chalk.cyan('Scheduled:')} ${task.scheduledAt.toLocaleString()}`);
+        if (task.executedAt) {
+          console.log(`${chalk.cyan('Executed:')} ${task.executedAt.toLocaleString()}`);
+        }
+        if (task.error) {
+          console.log(`${chalk.cyan('Error:')} ${chalk.red(task.error)}`);
+        }
+      }
+
+      // Stats
+      const stats = scheduler.getStats();
+      console.log('\n' + chalk.gray('─'.repeat(60)));
+      console.log(
+        `${chalk.bold('Stats:')} ` +
+        `${chalk.yellow(stats.pending + ' pending')} | ` +
+        `${chalk.green(stats.completed + ' completed')} | ` +
+        `${chalk.red(stats.failed + ' failed')}`
+      );
+
+    } catch (error: any) {
+      console.error(chalk.red('Failed to list tasks:'), error.message);
+      process.exit(1);
+    }
+  });
+
+// Run scheduler daemon
+program
+  .command('schedule-run')
+  .description('Run the scheduler to process due tasks')
+  .option('--once', 'Process due tasks once and exit')
+  .option('--astro <path>', 'Astro content directory path')
+  .option('--collection <name>', 'Astro collection name', 'blog')
+  .option('--data-dir <path>', 'Scheduler data directory', './.seo-bot')
+  .action(async (options) => {
+    try {
+      const scheduler = new Scheduler({
+        dataDir: options.dataDir,
+        astroConfig: options.astro ? {
+          contentDir: options.astro,
+          collection: options.collection,
+        } : undefined,
+        checkInterval: 60000,
+      });
+
+      await scheduler.initialize();
+
+      scheduler.on('taskStarted', (task) => {
+        console.log(chalk.blue('▶') + ` Starting: ${task.options.targetKeyword}`);
+      });
+
+      scheduler.on('taskCompleted', (task) => {
+        console.log(chalk.green('✓') + ` Completed: ${task.options.targetKeyword}`);
+        if (task.article) {
+          console.log(`  Title: ${task.article.title}`);
+        }
+      });
+
+      scheduler.on('taskFailed', (task) => {
+        console.log(chalk.red('✗') + ` Failed: ${task.options.targetKeyword}`);
+        console.log(`  Error: ${task.error}`);
+      });
+
+      if (options.once) {
+        const pending = scheduler.getPendingTasks();
+        const due = pending.filter(t => t.scheduledAt <= new Date());
+
+        if (due.length === 0) {
+          console.log(chalk.yellow('No tasks due for execution.'));
+          return;
+        }
+
+        console.log(`Processing ${due.length} due task(s)...`);
+        for (const task of due) {
+          await scheduler.runNow(task.id);
+        }
+        console.log(chalk.green('Done!'));
+      } else {
+        console.log(chalk.bold('Scheduler running...'));
+        console.log(chalk.gray('Press Ctrl+C to stop\n'));
+
+        const stats = scheduler.getStats();
+        console.log(`Pending tasks: ${stats.pending}`);
+
+        scheduler.start();
+
+        // Keep process alive
+        process.on('SIGINT', () => {
+          console.log('\nStopping scheduler...');
+          scheduler.stop();
+          process.exit(0);
+        });
+      }
+
+    } catch (error: any) {
+      console.error(chalk.red('Scheduler failed:'), error.message);
+      process.exit(1);
+    }
+  });
+
+// Publish to Astro command
+program
+  .command('publish <file>')
+  .description('Publish a markdown article to Astro')
+  .requiredOption('--astro <path>', 'Astro content directory path')
+  .option('--collection <name>', 'Astro collection name', 'blog')
+  .option('--draft', 'Publish as draft')
+  .option('--date <date>', 'Publish date')
+  .action(async (file: string, options) => {
+    const spinner = ora('Publishing to Astro...').start();
+
+    try {
+      // Read the markdown file
+      const content = await fs.readFile(file, 'utf-8');
+
+      // Parse frontmatter and content
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+      if (!fmMatch) {
+        throw new Error('Invalid markdown file format (missing frontmatter)');
+      }
+
+      const frontmatter = parseFrontmatter(fmMatch[1]);
+      const articleContent = fmMatch[2].trim();
+
+      const article: GeneratedArticle = {
+        title: frontmatter.title || path.basename(file, '.md'),
+        slug: frontmatter.slug || path.basename(file, '.md'),
+        metaDescription: frontmatter.description || '',
+        content: articleContent,
+        targetKeyword: frontmatter.keywords?.[0] || '',
+        secondaryKeywords: frontmatter.keywords?.slice(1) || [],
+        wordCount: articleContent.split(/\s+/).length,
+        readingTime: Math.ceil(articleContent.split(/\s+/).length / 200),
+        generatedAt: new Date(),
+        suggestedInternalLinks: [],
+      };
+
+      const publisher = new AstroPublisher({
+        contentDir: options.astro,
+        collection: options.collection,
+      });
+
+      const result = await publisher.publish(article, {
+        pubDate: options.date ? parseDate(options.date) : new Date(),
+        draft: options.draft,
+      });
+
+      if (result.success) {
+        spinner.succeed('Published to Astro!');
+        console.log(`${chalk.cyan('File:')} ${result.filePath}`);
+        console.log(`${chalk.cyan('Slug:')} ${result.slug}`);
+      } else {
+        throw new Error(result.error);
+      }
+
+    } catch (error: any) {
+      spinner.fail('Publishing failed');
+      console.error(chalk.red(error.message));
+      process.exit(1);
+    }
+  });
+
+// Helper function to parse dates
+function parseDate(input: string): Date {
+  const now = new Date();
+
+  if (input === 'now') return now;
+  if (input === 'tomorrow') {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+    return d;
+  }
+
+  // Handle +Ndays format
+  const daysMatch = input.match(/^\+(\d+)days?$/i);
+  if (daysMatch) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + parseInt(daysMatch[1]));
+    d.setHours(9, 0, 0, 0);
+    return d;
+  }
+
+  // Try parsing as ISO date
+  const parsed = new Date(input);
+  if (!isNaN(parsed.getTime())) {
+    return parsed;
+  }
+
+  throw new Error(`Invalid date format: ${input}`);
+}
+
+// Helper function to parse frontmatter
+function parseFrontmatter(yaml: string): Record<string, any> {
+  const result: Record<string, any> = {};
+
+  for (const line of yaml.split('\n')) {
+    const match = line.match(/^(\w+):\s*(.*)$/);
+    if (match) {
+      let value: any = match[2].trim();
+
+      // Handle quoted strings
+      if (value.startsWith('"') && value.endsWith('"')) {
+        value = value.slice(1, -1);
+      }
+
+      // Handle arrays
+      if (value.startsWith('[')) {
+        try {
+          value = JSON.parse(value.replace(/'/g, '"'));
+        } catch {}
+      }
+
+      result[match[1]] = value;
+    }
+  }
+
+  return result;
+}
 
 // Helper functions
 async function saveOutput(filepath: string, data: any) {

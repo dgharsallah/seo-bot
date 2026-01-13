@@ -13,6 +13,12 @@ export interface Config {
   includeImages: boolean;
   outputDir: string;
   outputFormat: 'markdown' | 'html' | 'json';
+  // Astro integration
+  astroContentDir?: string;
+  astroCollection?: string;
+  // Scheduler
+  schedulerDataDir: string;
+  defaultAuthor?: string;
 }
 
 export const config: Config = {
@@ -25,6 +31,12 @@ export const config: Config = {
   includeImages: process.env.INCLUDE_IMAGES !== 'false',
   outputDir: process.env.OUTPUT_DIR || './output',
   outputFormat: (process.env.OUTPUT_FORMAT as Config['outputFormat']) || 'markdown',
+  // Astro integration
+  astroContentDir: process.env.ASTRO_CONTENT_DIR,
+  astroCollection: process.env.ASTRO_COLLECTION || 'blog',
+  // Scheduler
+  schedulerDataDir: process.env.SCHEDULER_DATA_DIR || './.seo-bot',
+  defaultAuthor: process.env.DEFAULT_AUTHOR || 'SEO Bot',
 };
 
 export function validateConfig(): string[] {
