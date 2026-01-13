@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { config } from '../config';
 import { PageInfo, InternalLink } from '../types';
 
-interface LinkOpportunity {
+export interface LinkOpportunity {
   sourcePage: PageInfo;
   targetPage: PageInfo;
   suggestedAnchor: string;

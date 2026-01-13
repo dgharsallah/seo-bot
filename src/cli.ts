@@ -289,13 +289,20 @@ generatedAt: "${article.generatedAt.toISOString()}"
   await fs.writeFile(filepath, frontMatter + article.content);
 }
 
-// Validate configuration before running
-const errors = validateConfig();
-if (errors.length > 0 && process.argv.length > 2) {
-  console.error(chalk.red('Configuration errors:'));
-  errors.forEach(e => console.error(`  • ${e}`));
-  console.error(chalk.yellow('\nCreate a .env file with your API keys. See .env.example'));
-  process.exit(1);
+// Helper to validate config before command execution
+function requireConfig() {
+  const errors = validateConfig();
+  if (errors.length > 0) {
+    console.error(chalk.red('Configuration errors:'));
+    errors.forEach(e => console.error(`  • ${e}`));
+    console.error(chalk.yellow('\nCreate a .env file with your API keys. See .env.example'));
+    process.exit(1);
+  }
 }
+
+// Add hook to validate config before command execution
+program.hook('preAction', () => {
+  requireConfig();
+});
 
 program.parse();
